@@ -1,10 +1,10 @@
 """
-Topic Agent - Finds trending topics using OpenRouter (free models)
+Script Agent - Writes full video script with scenes for each fact
+Uses OpenRouter free models
 """
 
 import json
 import os
-import random
 import aiohttp
 
 
@@ -12,61 +12,79 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 FREE_MODEL = "meta-llama/llama-3.1-8b-instruct:free"
 
-# Fallback topic pools if API fails
-FALLBACK_TOPICS = {
-    "health_food": [
-        {"title": "5 Vegetables That Destroy Belly Fat", "hook": "These 5 vegetables are literally fat destroyers!"},
-        {"title": "What Happens If You Eat Garlic Every Day", "hook": "Doctors don't want you to know this about garlic!"},
-        {"title": "5 Foods That Clean Your Arteries Naturally", "hook": "Your arteries are getting clogged right now — unless you eat these!"},
-        {"title": "The Fruit That Kills Cancer Cells", "hook": "Scientists discovered this fruit fights cancer — and it's in your kitchen!"},
-        {"title": "5 Seeds That Control Blood Sugar", "hook": "Diabetics swear by these 5 tiny seeds!"},
-    ],
-    "psychology": [
-        {"title": "5 Dark Psychology Tricks Used On You Daily", "hook": "You are being manipulated right now and you don't even know it!"},
-        {"title": "Why Your Brain Lies To You", "hook": "Your own brain is your biggest enemy — here's proof!"},
-        {"title": "5 Signs Someone Is Secretly Jealous Of You", "hook": "That 'friend' might secretly hate your success!"},
-        {"title": "The Science Of Why You Procrastinate", "hook": "You're not lazy — your brain is broken in this specific way!"},
-        {"title": "5 Body Language Signs Someone Is Lying", "hook": "Spot a liar in 10 seconds using these body language tricks!"},
-    ],
-    "tech_ai": [
-        {"title": "5 AI Tools That Are Replacing Human Jobs", "hook": "Millions of jobs are disappearing because of these 5 AI tools!"},
-        {"title": "What GPT-5 Can Actually Do", "hook": "GPT-5 just broke every record — here's what it can REALLY do!"},
-        {"title": "5 Free AI Tools You Don't Know About", "hook": "These 5 free AI tools will make you 10x more productive!"},
-        {"title": "How AI Is Reading Your Emotions Right Now", "hook": "AI can tell you're scared before YOU even know it!"},
-        {"title": "5 Things AI Still Cannot Do", "hook": "AI is taking over — but here are 5 things it will NEVER replace!"},
-    ],
-}
 
+class ScriptAgent:
+    async def write_script(self, topic: str, hook: str, niche: str) -> dict:
+        """Write a full 5-scene video script"""
 
-class TopicAgent:
-    async def get_trending_topic(self, niche_prompt: str) -> dict:
-        """Get a trending topic using AI or fallback to curated list"""
-
-        # Try OpenRouter first
         if OPENROUTER_API_KEY:
             try:
-                topic = await self._fetch_from_ai(niche_prompt)
-                if topic:
-                    return topic
+                script = await self._fetch_from_ai(topic, hook, niche)
+                if script and self._validate_script(script):
+                    return script
             except Exception as e:
-                print(f"   ⚠️ OpenRouter failed: {e}, using fallback topics")
+                print(f"   ⚠️ Script AI failed: {e}, using template")
 
-        # Fallback: pick from curated list
-        niche_key = self._detect_niche(niche_prompt)
-        topics = FALLBACK_TOPICS.get(niche_key, FALLBACK_TOPICS["health_food"])
-        return random.choice(topics)
+        return self._template_script(topic, hook, niche)
 
-    async def _fetch_from_ai(self, niche_prompt: str) -> dict:
-        prompt = f"""Generate 1 viral YouTube Shorts topic about: {niche_prompt}
+    async def _fetch_from_ai(self, topic: str, hook: str, niche: str) -> dict:
+        prompt = f"""Write a YouTube Shorts video script for: "{topic}"
+Opening hook: "{hook}"
 
 Rules:
-- Title must be clickbait but truthful (max 60 chars)
-- Hook must grab attention in first 3 seconds
-- Format must work for 45-60 second short video
-- Must be about facts/tips (numbered list format like "5 things...")
+- Exactly 5 scenes (intro + 3 facts + outro)
+- Each scene: 1-2 short punchy sentences (max 20 words each)
+- Total duration: 45-55 seconds
+- Energetic, surprising tone
+- End with call to action: "Follow for more!"
 
-Respond ONLY with valid JSON, no markdown, no explanation:
-{{"title": "5 Foods That Destroy Belly Fat", "hook": "These 5 foods are literally fat killers!"}}"""
+Respond ONLY with valid JSON (no markdown):
+{{
+  "title": "video title for YouTube (max 60 chars)",
+  "description": "YouTube description (2-3 sentences + hashtags)",
+  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
+  "estimated_duration": 50,
+  "scenes": [
+    {{
+      "id": 1,
+      "type": "intro",
+      "narration": "Hook text spoken by narrator",
+      "image_prompt": "detailed prompt for AI image generation",
+      "duration": 8
+    }},
+    {{
+      "id": 2,
+      "type": "fact",
+      "fact_number": 1,
+      "narration": "Fact 1 narration text",
+      "image_prompt": "detailed prompt for this fact's image",
+      "duration": 10
+    }},
+    {{
+      "id": 3,
+      "type": "fact",
+      "fact_number": 2,
+      "narration": "Fact 2 narration text",
+      "image_prompt": "detailed prompt for this fact's image",
+      "duration": 10
+    }},
+    {{
+      "id": 4,
+      "type": "fact",
+      "fact_number": 3,
+      "narration": "Fact 3 narration text",
+      "image_prompt": "detailed prompt for this fact's image",
+      "duration": 10
+    }},
+    {{
+      "id": 5,
+      "type": "outro",
+      "narration": "Follow for more amazing facts!",
+      "image_prompt": "celebratory cartoon character waving goodbye, Pixar style",
+      "duration": 7
+    }}
+  ]
+}}"""
 
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -77,24 +95,77 @@ Respond ONLY with valid JSON, no markdown, no explanation:
         payload = {
             "model": FREE_MODEL,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 150,
-            "temperature": 0.9,
+            "max_tokens": 1200,
+            "temperature": 0.8,
         }
 
         async with aiohttp.ClientSession() as session:
             async with session.post(OPENROUTER_URL, headers=headers, json=payload) as resp:
                 data = await resp.json()
                 content = data["choices"][0]["message"]["content"].strip()
-                # Clean JSON
                 content = content.replace("```json", "").replace("```", "").strip()
-                return json.loads(content)
+                # Find JSON boundaries
+                start = content.find("{")
+                end = content.rfind("}") + 1
+                return json.loads(content[start:end])
 
-    def _detect_niche(self, prompt: str) -> str:
-        prompt_lower = prompt.lower()
-        if any(w in prompt_lower for w in ["food", "health", "vegetable", "diet"]):
-            return "health_food"
-        elif any(w in prompt_lower for w in ["psychology", "mind", "brain"]):
-            return "psychology"
-        elif any(w in prompt_lower for w in ["tech", "ai", "technology"]):
-            return "tech_ai"
-        return "health_food"
+    def _validate_script(self, script: dict) -> bool:
+        required = ["title", "scenes", "estimated_duration"]
+        return all(k in script for k in required) and len(script["scenes"]) >= 4
+
+    def _template_script(self, topic: str, hook: str, niche: str) -> dict:
+        """Fallback template when AI is unavailable"""
+        # Extract subject from topic for image prompts
+        subject_map = {
+            "health_food": "cute 3D cartoon vegetable character with big expressive eyes, Pixar style, kitchen background",
+            "psychology": "cute 3D cartoon brain character with big eyes, thinking pose, Pixar style",
+            "tech_ai": "cute 3D cartoon robot character with glowing eyes, futuristic lab background, Pixar style",
+        }
+        char = subject_map.get(niche, subject_map["health_food"])
+
+        return {
+            "title": topic[:60],
+            "description": f"{topic}. Watch till the end for the most shocking fact! #Shorts #Facts #{niche.replace('_', '').title()}",
+            "tags": ["shorts", "facts", "health", "viral", "trending"],
+            "estimated_duration": 50,
+            "scenes": [
+                {
+                    "id": 1,
+                    "type": "intro",
+                    "narration": hook,
+                    "image_prompt": f"{char}, surprised expression, holding up hands, dramatic lighting, 8K",
+                    "duration": 8,
+                },
+                {
+                    "id": 2,
+                    "type": "fact",
+                    "fact_number": 1,
+                    "narration": f"Number one! This is the first shocking fact about {topic.lower()}. You will not believe this!",
+                    "image_prompt": f"{char}, pointing finger, excited expression, number 1 floating text, golden background",
+                    "duration": 10,
+                },
+                {
+                    "id": 3,
+                    "type": "fact",
+                    "fact_number": 2,
+                    "narration": f"Number two! Here is the second amazing fact. Scientists confirmed this recently!",
+                    "image_prompt": f"{char}, wide eyes, jaw dropped, number 2 floating, science lab background",
+                    "duration": 10,
+                },
+                {
+                    "id": 4,
+                    "type": "fact",
+                    "fact_number": 3,
+                    "narration": f"Number three! This last fact will completely change how you see {topic.lower()}!",
+                    "image_prompt": f"{char}, mind blown expression, explosion effect behind, number 3 floating, dramatic lighting",
+                    "duration": 10,
+                },
+                {
+                    "id": 5,
+                    "type": "outro",
+                    "narration": "Follow for more amazing facts every day! Don't forget to like and share!",
+                    "image_prompt": f"{char}, waving happily, thumbs up, colorful confetti background, cheerful expression",
+                    "duration": 7,
+                },
+            ],
+        }
