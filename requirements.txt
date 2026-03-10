@@ -1,0 +1,11 @@
+moviepy==1.0.3
+Pillow==10.3.0
+edge-tts==6.1.9
+aiohttp==3.9.5
+aiofiles==23.2.1
+supabase==2.4.6
+mutagen==1.47.0
+numpy==1.26.4
+google-api-python-client==2.131.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.0
