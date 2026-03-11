@@ -13,7 +13,6 @@ import aiofiles
 
 
 OUTPUT_DIR = Path("outputs")
-POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}"
 
 # Image settings for YouTube Shorts (9:16 vertical)
 IMAGE_WIDTH = 1080
@@ -26,7 +25,6 @@ STYLE_SUFFIX = (
     "professional studio lighting, clean background"
 )
 
-# Negative aspects to avoid (encoded in prompt)
 NEGATIVE_SUFFIX = " white background, realistic photography, blurry, watermark"
 
 
@@ -38,7 +36,7 @@ class ImageAgent:
     async def generate_images(
         self, scenes: list, character_style: str, video_id: str
     ) -> list:
-        """Generate one image per scene concurrently"""
+        """Generate one image per scene sequentially with delay"""
 
         tasks = [
             self._generate_single(
@@ -49,19 +47,21 @@ class ImageAgent:
             for scene in scenes
         ]
 
-        # Run all image generations concurrently
+        # Sequential generation with delay to avoid rate limiting
         images = []
-for task in tasks:
-    result = await task
-    images.append(result)
-    await asyncio.sleep(3)  # wait 3 seconds between images
+        for task in tasks:
+            try:
+                result = await task
+                images.append(result)
+            except Exception as e:
+                images.append(e)
+            await asyncio.sleep(3)  # wait 3 seconds between images
 
         # Filter out failures
         valid_images = []
         for i, img in enumerate(images):
             if isinstance(img, Exception):
                 print(f"   ⚠️ Scene {i+1} image failed: {img}")
-                # Use placeholder
                 valid_images.append(self._get_placeholder_path(i))
             else:
                 valid_images.append(img)
@@ -73,7 +73,6 @@ for task in tasks:
     ) -> Path:
         """Generate image for a single scene"""
 
-        # Build full prompt
         base_prompt = scene.get("image_prompt", "cute cartoon character")
         full_prompt = f"{character_style}, {base_prompt}{STYLE_SUFFIX}"
 
@@ -109,18 +108,17 @@ for task in tasks:
                             return cache_path
                         else:
                             print(f"   ⚠️ Scene {scene['id']}: HTTP {resp.status}, retry {attempt+1}")
+                            await asyncio.sleep(5)
             except Exception as e:
                 print(f"   ⚠️ Scene {scene['id']}: Error {e}, retry {attempt+1}")
-                await asyncio.sleep(2 ** attempt)  # exponential backoff
+                await asyncio.sleep(2 ** attempt)
 
-        # All retries failed
         raise Exception(f"Failed to generate image for scene {scene['id']}")
 
     def _get_placeholder_path(self, index: int) -> Path:
         """Return a solid color placeholder if image generation fails"""
         placeholder = self.cache_dir / f"placeholder_{index}.jpg"
         if not placeholder.exists():
-            # Create a minimal valid JPEG placeholder
             try:
                 from PIL import Image, ImageDraw
                 colors = ["#2d7a2d", "#6a0dad", "#0a74da", "#d4380d", "#c77c00"]
