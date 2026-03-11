@@ -1,42 +1,32 @@
 """
-Image Agent - Generates cartoon images using Hugging Face FLUX.1
-Best free quality available - requires free HF_TOKEN
-Model: black-forest-labs/FLUX.1-schnell (fast, free, high quality)
-Get free token at: https://huggingface.co/settings/tokens
+Image Agent - Fetches high quality real images using Pexels API
+100% FREE - Get free API key at https://www.pexels.com/api/
+Professional HD stock photos - much better than AI generation
 """
 
 import asyncio
 import hashlib
-import io
 import os
 from pathlib import Path
 
 import aiohttp
+import aiofiles
 from PIL import Image
+import io
 
-HF_TOKEN = os.getenv("HF_TOKEN")
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 OUTPUT_DIR = Path("outputs")
 
-# Best free models on HuggingFace (in order of quality)
-MODELS = [
-    "black-forest-labs/FLUX.1-schnell",   # Best quality, fast
-    "stabilityai/stable-diffusion-xl-base-1.0",  # Fallback
-]
+# YouTube Shorts dimensions (9:16 vertical)
+TARGET_W = 1080
+TARGET_H = 1920
 
-# YouTube Shorts dimensions (9:16)
-IMAGE_WIDTH = 1024
-IMAGE_HEIGHT = 1024  # HF generates square, we'll crop/pad to 9:16
-
-STYLE_SUFFIX = (
-    ", 3D render, Pixar animation style, cinematic lighting, "
-    "vibrant colors, sharp details, professional studio lighting, "
-    "clean colorful background, high quality, 8K"
-)
-
-NEGATIVE_PROMPT = (
-    "realistic photo, blurry, watermark, text, ugly, "
-    "deformed, noisy, low quality, dark, gloomy"
-)
+# Fallback search terms if scene-specific search fails
+NICHE_FALLBACKS = {
+    "health_food": ["healthy food", "vegetables", "nutrition", "wellness", "organic food"],
+    "psychology":  ["human brain", "mind psychology", "thinking person", "mental health", "neuroscience"],
+    "tech_ai":     ["artificial intelligence", "technology", "computer", "robot", "digital future"],
+}
 
 
 class ImageAgent:
@@ -44,134 +34,185 @@ class ImageAgent:
         self.cache_dir = OUTPUT_DIR / "image_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        if not HF_TOKEN:
-            print("   ⚠️ HF_TOKEN not set! Add it to GitHub Secrets.")
-            print("   Get free token at: https://huggingface.co/settings/tokens")
+        if not PEXELS_API_KEY:
+            print("   ⚠️ PEXELS_API_KEY not set! Add it to GitHub Secrets.")
+            print("   Get free key at: https://www.pexels.com/api/")
 
     async def generate_images(
         self, scenes: list, character_style: str, video_id: str
     ) -> list:
-        """Generate one image per scene sequentially"""
+        """Fetch one real image per scene"""
+
+        # Extract niche from character_style for fallback
+        niche = "health_food"
+        if "brain" in character_style.lower():
+            niche = "psychology"
+        elif "robot" in character_style.lower():
+            niche = "tech_ai"
 
         images = []
+        used_ids = set()  # avoid duplicate images across scenes
+
         for i, scene in enumerate(scenes):
-            print(f"   🎨 Scene {scene['id']}: Generating image ({i+1}/{len(scenes)})...")
+            print(f"   🖼️ Scene {scene['id']}: Fetching image ({i+1}/{len(scenes)})...")
             try:
-                img_path = await self._generate_single(
+                img_path = await self._fetch_image(
                     scene=scene,
-                    character_style=character_style,
-                    video_id=video_id,
+                    niche=niche,
+                    used_ids=used_ids,
+                    index=i,
                 )
                 images.append(img_path)
-                print(f"   ✅ Scene {scene['id']}: Image saved!")
+                print(f"   ✅ Scene {scene['id']}: Image ready!")
             except Exception as e:
                 print(f"   ⚠️ Scene {scene['id']} failed: {e}")
                 images.append(self._get_placeholder_path(i))
 
-            # Wait between requests to avoid rate limiting
-            if i < len(scenes) - 1:
-                await asyncio.sleep(5)
+            await asyncio.sleep(0.5)  # small polite delay
 
         return images
 
-    async def _generate_single(
-        self, scene: dict, character_style: str, video_id: str
+    async def _fetch_image(
+        self, scene: dict, niche: str, used_ids: set, index: int
     ) -> Path:
-        """Generate image for a single scene using HF API"""
+        """Search Pexels and download best matching image"""
 
-        base_prompt = scene.get("image_prompt", "cute cartoon character")
-        full_prompt = f"{character_style}, {base_prompt}{STYLE_SUFFIX}"
+        # Build search query from scene's image prompt
+        raw_prompt = scene.get("image_prompt", "")
+        query = self._prompt_to_search_query(raw_prompt, niche)
 
-        # Check cache first
-        cache_key = hashlib.md5(full_prompt.encode()).hexdigest()[:12]
+        # Cache key based on query + index to avoid reuse
+        cache_key = hashlib.md5(f"{query}_{index}".encode()).hexdigest()[:12]
         cache_path = self.cache_dir / f"{cache_key}.jpg"
 
         if cache_path.exists():
             print(f"   📦 Scene {scene['id']}: Using cached image")
             return cache_path
 
-        # Try each model
-        for model in MODELS:
-            try:
-                image_bytes = await self._call_hf_api(full_prompt, model)
-                if image_bytes:
-                    # Process and save image
-                    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-                    # Resize to 9:16 by padding
-                    img = self._resize_to_vertical(img)
-                    img.save(cache_path, "JPEG", quality=95)
+        # Try main query, then fallbacks
+        queries_to_try = [query] + NICHE_FALLBACKS.get(niche, ["nature"])
+
+        for q in queries_to_try:
+            photo_url = await self._search_pexels(q, used_ids)
+            if photo_url:
+                success = await self._download_and_process(photo_url, cache_path)
+                if success:
                     return cache_path
-            except Exception as e:
-                print(f"   ⚠️ Model {model} failed: {e}")
-                await asyncio.sleep(3)
-                continue
 
-        raise Exception(f"All models failed for scene {scene['id']}")
+        raise Exception(f"No image found for scene {scene['id']}")
 
-    async def _call_hf_api(self, prompt: str, model: str) -> bytes:
-        """Call Hugging Face Inference API"""
+    async def _search_pexels(self, query: str, used_ids: set) -> str | None:
+        """Search Pexels API and return best photo URL"""
 
-        url = f"https://api-inference.huggingface.co/models/{model}"
-        headers = {
-            "Authorization": f"Bearer {HF_TOKEN}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "inputs": prompt,
-            "parameters": {
-                "negative_prompt": NEGATIVE_PROMPT,
-                "width": IMAGE_WIDTH,
-                "height": IMAGE_HEIGHT,
-                "num_inference_steps": 4,   # FLUX.1-schnell works great at 4 steps
-                "guidance_scale": 0.0,       # FLUX.1-schnell doesn't use guidance
-            },
-            "options": {
-                "wait_for_model": True,       # Wait if model is loading
-                "use_cache": False,
-            }
+        if not PEXELS_API_KEY:
+            return None
+
+        headers = {"Authorization": PEXELS_API_KEY}
+        params = {
+            "query": query,
+            "orientation": "portrait",   # vertical for Shorts
+            "size": "large",
+            "per_page": 15,
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as resp:
-                if resp.status == 200:
-                    return await resp.read()
-                elif resp.status == 503:
-                    # Model loading, wait and retry
-                    print(f"   ⏳ Model loading, waiting 20s...")
-                    await asyncio.sleep(20)
-                    raise Exception("Model loading")
-                else:
-                    text = await resp.text()
-                    raise Exception(f"HTTP {resp.status}: {text[:100]}")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://api.pexels.com/v1/search",
+                    headers=headers,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        return None
 
-    def _resize_to_vertical(self, img: Image.Image) -> Image.Image:
-        """Resize square image to 1080x1920 vertical format"""
-        target_w, target_h = 1080, 1920
+                    data = await resp.json()
+                    photos = data.get("photos", [])
 
-        # Scale image to fit width
-        scale = target_w / img.width
-        new_h = int(img.height * scale)
-        img = img.resize((target_w, new_h), Image.LANCZOS)
+                    # Pick first photo not already used
+                    for photo in photos:
+                        if photo["id"] not in used_ids:
+                            used_ids.add(photo["id"])
+                            # Use large2x for best quality
+                            return photo["src"].get("large2x") or photo["src"]["large"]
 
-        # Pad top and bottom to reach target height
-        result = Image.new("RGB", (target_w, target_h), (20, 20, 20))
-        paste_y = (target_h - new_h) // 2
-        result.paste(img, (0, paste_y))
-        return result
+        except Exception as e:
+            print(f"   ⚠️ Pexels search failed for '{query}': {e}")
+
+        return None
+
+    async def _download_and_process(self, url: str, save_path: Path) -> bool:
+        """Download image and resize to 9:16 vertical format"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    if resp.status != 200:
+                        return False
+                    content = await resp.read()
+
+            # Process image
+            img = Image.open(io.BytesIO(content)).convert("RGB")
+            img = self._crop_to_vertical(img)
+            img.save(save_path, "JPEG", quality=95)
+            return True
+
+        except Exception as e:
+            print(f"   ⚠️ Download failed: {e}")
+            return False
+
+    def _crop_to_vertical(self, img: Image.Image) -> Image.Image:
+        """Smart crop image to 1080x1920 (9:16) vertical format"""
+        target_ratio = TARGET_W / TARGET_H  # 0.5625
+        img_ratio = img.width / img.height
+
+        if img_ratio > target_ratio:
+            # Image is wider — crop sides
+            new_w = int(img.height * target_ratio)
+            left = (img.width - new_w) // 2
+            img = img.crop((left, 0, left + new_w, img.height))
+        else:
+            # Image is taller — crop top/bottom (keep center)
+            new_h = int(img.width / target_ratio)
+            top = (img.height - new_h) // 3  # slightly above center looks better
+            img = img.crop((0, top, img.width, top + new_h))
+
+        return img.resize((TARGET_W, TARGET_H), Image.LANCZOS)
+
+    def _prompt_to_search_query(self, prompt: str, niche: str) -> str:
+        """Convert AI image prompt to a clean Pexels search query"""
+
+        # Remove style words that don't help with stock photo search
+        remove_words = [
+            "3d", "render", "pixar", "cartoon", "animation", "cinematic",
+            "lighting", "vibrant", "sharp", "8k", "studio", "background",
+            "cute", "character", "big eyes", "expressive", "dramatic",
+            "floating", "explosion", "effect", "pose", "style", "number",
+            "golden", "colorful", "confetti", "cheerful", "waving", "thumbs"
+        ]
+
+        words = prompt.lower().split()
+        clean_words = [w for w in words if w not in remove_words and len(w) > 2]
+
+        # Take first 4 meaningful words
+        query = " ".join(clean_words[:4]).strip()
+
+        # Fallback if query is too short
+        if len(query) < 5:
+            fallbacks = NICHE_FALLBACKS.get(niche, ["nature health"])
+            query = fallbacks[0]
+
+        return query
 
     def _get_placeholder_path(self, index: int) -> Path:
-        """Return colored placeholder if generation fails"""
+        """Colored placeholder as last resort"""
         placeholder = self.cache_dir / f"placeholder_{index}.jpg"
         if not placeholder.exists():
             try:
                 colors = [(45, 122, 45), (106, 13, 173), (10, 116, 218), (212, 56, 13), (199, 124, 0)]
-                color = colors[index % len(colors)]
-                img = Image.new("RGB", (1080, 1920), color)
+                img = Image.new("RGB", (TARGET_W, TARGET_H), colors[index % len(colors)])
                 img.save(placeholder, "JPEG")
             except Exception:
                 pass
