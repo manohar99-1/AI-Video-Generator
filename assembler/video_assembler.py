@@ -111,7 +111,7 @@ class VideoAssembler:
 
         # Load audio to get duration
         audio_clip = AudioFileClip(str(audio_path))
-        duration = audio_clip.duration + 0.3
+        duration = audio_clip.duration
 
         # Load image
         img_clip = self._create_image_clip(image_path=image_path, duration=duration)
