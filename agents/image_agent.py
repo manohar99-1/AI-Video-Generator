@@ -50,7 +50,11 @@ class ImageAgent:
         ]
 
         # Run all image generations concurrently
-        images = await asyncio.gather(*tasks, return_exceptions=True)
+        images = []
+for task in tasks:
+    result = await task
+    images.append(result)
+    await asyncio.sleep(3)  # wait 3 seconds between images
 
         # Filter out failures
         valid_images = []
