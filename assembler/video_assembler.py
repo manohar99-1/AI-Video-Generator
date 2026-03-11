@@ -142,29 +142,7 @@ class VideoAssembler:
         img_array = np.array(img)
 
         base_clip = ImageClip(img_array).set_duration(duration)
-
-        # Apply zoom animation based on type
-        zoom_factor = 1.05  # 5% zoom
-
-        if animation_type == 0:
-            # Slow zoom in
-            def zoom_in(t):
-                scale = 1 + (zoom_factor - 1) * (t / duration)
-                return scale
-            clip = base_clip.resize(zoom_in)
-
-        elif animation_type == 1:
-            # Slow zoom out
-            def zoom_out(t):
-                scale = zoom_factor - (zoom_factor - 1) * (t / duration)
-                return scale
-            clip = base_clip.resize(zoom_out)
-
-        else:
-            # Pan right
-            clip = base_clip
-
-        return clip.set_position("center")
+        return base_clip.set_position("center")
 
     def _create_fact_badge(
         self, number: int, color_theme: str, duration: float
