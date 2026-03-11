@@ -1,23 +1,22 @@
 """
-Voice Agent - Generates voiceover using Edge-TTS
-100% FREE - Microsoft Edge Text-to-Speech
-pip install edge-tts
+Voice Agent - Generates voiceover using gTTS (Google Text-to-Speech)
+100% FREE - Works on GitHub Actions
+pip install gtts
 """
 
 import asyncio
 from pathlib import Path
-import edge_tts
+from gtts import gTTS
 
 
 OUTPUT_DIR = Path("outputs")
 
-# Available free voices (Microsoft Edge TTS)
-VOICES = {
-    "en-IN-NeerjaNeural": "Indian English Female - energetic",
-    "en-US-AriaNeural": "US English Female - warm",
-    "en-US-GuyNeural": "US English Male - clear",
-    "en-GB-SoniaNeural": "British English Female - crisp",
-    "en-AU-NatashaNeural": "Australian English Female - friendly",
+VOICE_CONFIG = {
+    "en-IN-NeerjaNeural": {"lang": "en", "tld": "co.in"},   # Indian English
+    "en-US-AriaNeural":   {"lang": "en", "tld": "com"},      # US English
+    "en-US-GuyNeural":    {"lang": "en", "tld": "com"},      # US English
+    "en-GB-SoniaNeural":  {"lang": "en", "tld": "co.uk"},    # British English
+    "en-AU-NatashaNeural":{"lang": "en", "tld": "com.au"},   # Australian English
 }
 
 
@@ -26,75 +25,60 @@ class VoiceAgent:
         self.audio_dir = OUTPUT_DIR / "audio"
         self.audio_dir.mkdir(parents=True, exist_ok=True)
 
-    async def generate_audio(
-        self, scenes: list, voice: str, video_id: str
-    ) -> list:
+    async def generate_audio(self, scenes: list, voice: str, video_id: str) -> list:
         """Generate audio for each scene"""
+        audio_files = []
+        config = VOICE_CONFIG.get(voice, {"lang": "en", "tld": "com"})
 
-        tasks = [
-            self._generate_scene_audio(
+        for scene in scenes:
+            audio_path = await self._generate_scene_audio(
                 scene=scene,
-                voice=voice,
+                config=config,
                 video_id=video_id,
             )
-            for scene in scenes
-        ]
+            audio_files.append(audio_path)
+            await asyncio.sleep(1)  # small delay between requests
 
-        audio_files = await asyncio.gather(*tasks)
-        return list(audio_files)
+        return audio_files
 
-    async def _generate_scene_audio(
-        self, scene: dict, voice: str, video_id: str
-    ) -> Path:
-        """Generate audio for a single scene"""
+    async def _generate_scene_audio(self, scene: dict, config: dict, video_id: str) -> Path:
+        """Generate audio for a single scene using gTTS"""
 
         text = scene.get("narration", "")
         scene_id = scene.get("id", 0)
-
         audio_path = self.audio_dir / f"{video_id}_scene_{scene_id}.mp3"
 
         if audio_path.exists():
             return audio_path
 
-        # Add SSML-like pauses for natural pacing
-        text_with_pauses = self._add_emphasis(text, scene.get("type", "fact"))
-
-        communicate = edge_tts.Communicate(
-            text=text_with_pauses,
-            voice=voice,
-            rate="+15%",   # Slightly faster for Shorts energy
-            pitch="+0Hz",
-            volume="+0%",
+        # Run gTTS in thread pool (it's synchronous)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            self._save_audio,
+            text,
+            config,
+            audio_path,
         )
 
-        await communicate.save(str(audio_path))
         print(f"   🎙️ Scene {scene_id}: Audio generated")
         return audio_path
 
-    def _add_emphasis(self, text: str, scene_type: str) -> str:
-        """Add pacing and emphasis to narration"""
-
-        if scene_type == "intro":
-            # Slower, dramatic opening
-            return text
-
-        elif scene_type == "outro":
-            return text
-
-        elif scene_type == "fact":
-            # Add slight pause before the fact number
-            text = text.replace("Number one!", "Number one!...")
-            text = text.replace("Number two!", "Number two!...")
-            text = text.replace("Number three!", "Number three!...")
-
-        return text
+    def _save_audio(self, text: str, config: dict, path: Path):
+        """Synchronous gTTS save"""
+        tts = gTTS(
+            text=text,
+            lang=config["lang"],
+            tld=config["tld"],
+            slow=False,
+        )
+        tts.save(str(path))
 
     async def get_audio_duration(self, audio_path: Path) -> float:
-        """Get duration of audio file in seconds"""
+        """Get duration of audio file"""
         try:
             import mutagen.mp3
             audio = mutagen.mp3.MP3(str(audio_path))
             return audio.info.length
         except Exception:
-            # Estimate: ~150 words per minute
             return 8.0
