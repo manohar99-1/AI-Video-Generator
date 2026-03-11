@@ -98,7 +98,7 @@ class YouTubeUploader:
         print(f"   ✅ Saved as draft: {youtube_url}")
 
         # Send Telegram notification
-        asyncio.run(self._notify_telegram(title=title, youtube_url=youtube_url, studio_url=studio_url))
+        import nest_asyncio; nest_asyncio.apply(); asyncio.get_event_loop().run_until_complete(self._notify_telegram(title=title, youtube_url=youtube_url, studio_url=studio_url))
 
         return youtube_url
 
